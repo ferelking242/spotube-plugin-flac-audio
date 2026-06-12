@@ -1,0 +1,132 @@
+import "module:std" as std
+
+var HttpClient = std.HttpClient
+var RequestOptions = std.RequestOptions
+var HttpResponse = std.HttpResponse
+
+var DOWNLOAD_SECRET = "l@p*gute)77=g5clebcp4lz#=x%(*rwg+ku0_)bh=&%6wg!a"
+var ANDROID_UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36"
+
+class Converter {
+  static fun toSpotubeMatchObject(results: List) -> List {
+    if (results == null || results.isEmpty) return []
+    return results.map((d) {
+      var artistName = d["artist"] != null ? d["artist"]["name"] : "Unknown"
+      var coverUrl = d["album"] != null ? d["album"]["cover_medium"] : ""
+      return {
+        "id": d["id"].toString(),
+        "title": d["title"] ?? "",
+        "artists": [artistName],
+        "duration": d["duration"],
+        "thumbnail": coverUrl,
+        "externalUri": "",
+      }.toJson()
+    }).toList()
+  }
+}
+
+
+class AudioSourceEndpoint {
+  var api: HttpClient
+
+  construct (this.api)
+
+  get supportedPresets -> List {
+    return [
+      {
+        type: "lossless",
+        name: "flac",
+        qualities: [
+          { bitDepth: 16, sampleRate: 44100 },
+        ],
+      }.toJson(),
+      {
+        type: "lossy",
+        name: "mp3",
+        qualities: [
+          { bitrate: 320000 },
+        ],
+      }.toJson(),
+    ]
+  }
+
+  fun matches(track: Map) -> List {
+    if (track == null) return []
+
+    var artists = ""
+    if (track["artists"] != null) {
+      artists = track["artists"].map((a) => a["name"]).join(", ")
+    }
+    var trackName = track["name"] ?? ""
+    var hasISRC = track["isrc"] != null && track["isrc"].isNotEmpty
+    var query = hasISRC ? track["isrc"] : "${trackName} ${artists}"
+
+    return api.get_req(
+      "/flac/search",
+      queryParameters: { "query": query }.toJson(),
+    ).then((res) {
+      if (res.statusCode != 200) return []
+      var body = res.data
+      if (body == null || body["data"] == null) return []
+      var data = body["data"]
+      if (data.isEmpty && hasISRC) {
+        return api.get_req(
+          "/flac/search",
+          queryParameters: { "query": "${trackName} ${artists}" }.toJson(),
+        ).then((retryRes) {
+          if (retryRes.statusCode != 200) return []
+          var retryBody = retryRes.data
+          if (retryBody == null || retryBody["data"] == null) return []
+          return Converter.toSpotubeMatchObject(retryBody["data"])
+        })
+      }
+      return Converter.toSpotubeMatchObject(data)
+    })
+  }
+
+  fun buildStream(id, format, container, type, codec, bitrate) -> Map {
+    return api.get_req(
+      "/flac/download-token",
+      queryParameters: { "t": id, "f": format }.toJson(),
+      options: RequestOptions(
+        headers: {
+          "X-Download-Access": DOWNLOAD_SECRET,
+          "User-Agent": ANDROID_UA,
+          "Referer": "https://flacdownloader.com/",
+          "Origin": "https://flacdownloader.com",
+        }.toJson(),
+      ),
+    ).then((res) {
+      if (res.statusCode != 200) return null
+      var tokenData = res.data
+      if (tokenData == null || tokenData["token"] == null) return null
+      var fields = {
+        "url": "https://flacdownloader.com/flac/download?t=${id}&f=${format}&token=${tokenData["token"]}&expires=${tokenData["expires"]}",
+        "container": container,
+        "type": type,
+        "codec": codec,
+        "bitrate": bitrate,
+        "sampleRate": 44100,
+        "bitDepth": 16,
+      }
+      return fields.toJson()
+    })
+  }
+
+  fun streams(match: Map) -> List {
+    if (match == null || match["id"] == null) return []
+    var id = match["id"]
+
+    var flacFuture = buildStream(id, "FLAC", "flac", "lossless", "flac", 1411200)
+    var mp3Future = buildStream(id, "MP3", "mp3", "lossy", "mp3", 320000)
+
+    return Future.wait([flacFuture, mp3Future]).then((results) {
+      var streams = []
+      if (results[0] != null) streams.add(results[0])
+      if (results[1] != null) streams.add(results[1])
+      return streams
+    })
+  }
+}
+
+export { AudioSourceEndpoint }
