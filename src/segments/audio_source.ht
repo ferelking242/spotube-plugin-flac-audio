@@ -6,6 +6,12 @@ var HttpResponse = std.HttpResponse
 
 var DOWNLOAD_SECRET = "l@p*gute)77=g5clebcp4lz#=x%(*rwg+ku0_)bh=&%6wg!a"
 var ANDROID_UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36"
+var UAS = [
+  "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36",
+  "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36",
+  "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36",
+  "Mozilla/5.0 (Linux; Android 14; iPhone 15 Pro Max) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+]
 
 fun normalizeTitle(title: String) -> String {
   if (title == null) return ""
@@ -52,8 +58,13 @@ class Converter {
 
 class AudioSourceEndpoint {
   var api: HttpClient
+  var searchCache: Map
+  var uaIndex: num
 
-  construct (this.api)
+  construct (this.api) {
+    this.searchCache = {}
+    this.uaIndex = 0
+  }
 
   get supportedPresets -> List {
     return [
@@ -74,14 +85,39 @@ class AudioSourceEndpoint {
     ]
   }
 
+  fun rotateUA() -> String {
+    var ua = UAS[uaIndex]
+    uaIndex = (uaIndex + 1) % UAS.length
+    return ua
+  }
+
   fun searchRaw(query: String) -> Future {
+    if (query == null || query.isEmpty) return Future.value(null)
+    if (searchCache.containsKey(query)) {
+      return Future.value(searchCache[query])
+    }
     return api.get_req(
       "/flac/search",
       queryParameters: { "query": query }.toJson(),
+      options: RequestOptions(
+        headers: {
+          "User-Agent": rotateUA(),
+          "Referer": "https://flacdownloader.com/",
+          "Origin": "https://flacdownloader.com",
+        }.toJson(),
+      ),
     ).then((res) {
       if (res.statusCode != 200) return null
       if (res.data == null || res.data["data"] == null) return null
-      return res.data["data"]
+      var data = res.data["data"]
+      searchCache[query] = data
+      if (searchCache.length > 100) {
+        for (var key in searchCache) {
+          searchCache.remove(key)
+          break
+        }
+      }
+      return data
     })
   }
 
@@ -129,32 +165,51 @@ class AudioSourceEndpoint {
     })
   }
 
-  fun buildStream(id, format, container, type, codec, bitrate) -> Map {
+  fun doTokenRequest(id, format) -> Future {
     return api.get_req(
       "/flac/download-token",
       queryParameters: { "t": id, "f": format }.toJson(),
       options: RequestOptions(
         headers: {
           "X-Download-Access": DOWNLOAD_SECRET,
-          "User-Agent": ANDROID_UA,
+          "User-Agent": rotateUA(),
           "Referer": "https://flacdownloader.com/",
           "Origin": "https://flacdownloader.com",
         }.toJson(),
       ),
-    ).then((res) {
-      if (res.statusCode != 200) return null
-      var tokenData = res.data
-      if (tokenData == null || tokenData["token"] == null) return null
-      var fields = {
-        "url": "https://flacdownloader.com/flac/download?t=${id}&f=${format}&token=${tokenData["token"]}&expires=${tokenData["expires"]}",
-        "container": container,
-        "type": type,
-        "codec": codec,
-        "bitrate": bitrate,
-        "sampleRate": 44100,
-        "bitDepth": 16,
+    )
+  }
+
+  fun buildStream(id, format, container, type, codec, bitrate) -> Map {
+    return doTokenRequest(id, format).then((res) {
+      if (res.statusCode == 200 && res.data != null && res.data["token"] != null) {
+        var tokenData = res.data
+        var fields = {
+          "url": "https://flacdownloader.com/flac/download?t=${id}&f=${format}&token=${tokenData["token"]}&expires=${tokenData["expires"]}",
+          "container": container,
+          "type": type,
+          "codec": codec,
+          "bitrate": bitrate,
+          "sampleRate": 44100,
+          "bitDepth": 16,
+        }
+        return fields.toJson()
       }
-      return fields.toJson()
+      return doTokenRequest(id, format).then((retryRes) {
+        if (retryRes.statusCode != 200) return null
+        var tokenData = retryRes.data
+        if (tokenData == null || tokenData["token"] == null) return null
+        var fields = {
+          "url": "https://flacdownloader.com/flac/download?t=${id}&f=${format}&token=${tokenData["token"]}&expires=${tokenData["expires"]}",
+          "container": container,
+          "type": type,
+          "codec": codec,
+          "bitrate": bitrate,
+          "sampleRate": 44100,
+          "bitDepth": 16,
+        }
+        return fields.toJson()
+      })
     })
   }
 
