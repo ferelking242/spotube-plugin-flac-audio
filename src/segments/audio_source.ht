@@ -58,11 +58,9 @@ class Converter {
 
 class AudioSourceEndpoint {
   var api: HttpClient
-  var searchCache: Map
   var uaIndex: num
 
   construct (this.api) {
-    this.searchCache = {}
     this.uaIndex = 0
   }
 
@@ -93,9 +91,6 @@ class AudioSourceEndpoint {
 
   fun searchRaw(query: String) -> Future {
     if (query == null || query.isEmpty) return Future.value(null)
-    if (searchCache.containsKey(query)) {
-      return Future.value(searchCache[query])
-    }
     return api.get_req(
       "/flac/search",
       queryParameters: { "query": query }.toJson(),
@@ -109,15 +104,7 @@ class AudioSourceEndpoint {
     ).then((res) {
       if (res.statusCode != 200) return null
       if (res.data == null || res.data["data"] == null) return null
-      var data = res.data["data"]
-      searchCache[query] = data
-      if (searchCache.length > 100) {
-        for (var key in searchCache) {
-          searchCache.remove(key)
-          break
-        }
-      }
-      return data
+      return res.data["data"]
     })
   }
 
