@@ -7,6 +7,30 @@ var HttpResponse = std.HttpResponse
 var DOWNLOAD_SECRET = "l@p*gute)77=g5clebcp4lz#=x%(*rwg+ku0_)bh=&%6wg!a"
 var ANDROID_UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36"
 
+fun normalizeTitle(title: String) -> String {
+  if (title == null) return ""
+  var t = title.trim()
+  var paren = t.indexOf("(")
+  if (paren > 0) t = t.substring(0, paren).trim()
+  var bracket = t.indexOf("[")
+  if (bracket > 0) t = t.substring(0, bracket).trim()
+  var dash = t.indexOf(" - ")
+  if (dash > 0) t = t.substring(0, dash).trim()
+  var feat = t.toLowerCase().indexOf(" feat")
+  if (feat > 0) t = t.substring(0, feat).trim()
+  var ft = t.toLowerCase().indexOf(" ft.")
+  if (ft > 0) t = t.substring(0, ft).trim()
+  var remaster = t.toLowerCase().indexOf("remaster")
+  if (remaster > 0) t = t.substring(0, remaster).trim()
+  return t
+}
+
+fun titleMatches(search: String, result: String) -> bool {
+  var s = normalizeTitle(search).toLowerCase()
+  var r = normalizeTitle(result).toLowerCase()
+  return r.contains(s) || s.contains(r)
+}
+
 class Converter {
   static fun toSpotubeMatchObject(results: List) -> List {
     if (results == null || results.isEmpty) return []
@@ -50,6 +74,24 @@ class AudioSourceEndpoint {
     ]
   }
 
+  fun searchRaw(query: String) -> Future {
+    return api.get_req(
+      "/flac/search",
+      queryParameters: { "query": query }.toJson(),
+    ).then((res) {
+      if (res.statusCode != 200) return null
+      if (res.data == null || res.data["data"] == null) return null
+      return res.data["data"]
+    })
+  }
+
+  fun trySearch(query: String) -> Future {
+    return searchRaw(query).then((data) {
+      if (data == null || data.isEmpty) return null
+      return Converter.toSpotubeMatchObject(data)
+    })
+  }
+
   fun matches(track: Map) -> List {
     if (track == null) return []
 
@@ -59,28 +101,31 @@ class AudioSourceEndpoint {
     }
     var trackName = track["name"] ?? ""
     var hasISRC = track["isrc"] != null && track["isrc"].isNotEmpty
-    var query = hasISRC ? track["isrc"] : "${trackName} ${artists}"
 
-    return api.get_req(
-      "/flac/search",
-      queryParameters: { "query": query }.toJson(),
-    ).then((res) {
-      if (res.statusCode != 200) return []
-      var body = res.data
-      if (body == null || body["data"] == null) return []
-      var data = body["data"]
-      if (data.isEmpty && hasISRC) {
-        return api.get_req(
-          "/flac/search",
-          queryParameters: { "query": "${trackName} ${artists}" }.toJson(),
-        ).then((retryRes) {
-          if (retryRes.statusCode != 200) return []
-          var retryBody = retryRes.data
-          if (retryBody == null || retryBody["data"] == null) return []
-          return Converter.toSpotubeMatchObject(retryBody["data"])
+    if (hasISRC) {
+      return searchRaw(track["isrc"]).then((data) {
+        if (data != null && data.isNotEmpty) {
+          var first = data[0]
+          if (titleMatches(trackName, first["title"] ?? "")) {
+            return Converter.toSpotubeMatchObject(data)
+          }
+        }
+        var titleArtist = "${trackName} ${artists}"
+        return trySearch(titleArtist).then((results) {
+          if (results != null && results.isNotEmpty) return results
+          var normalized = normalizeTitle(trackName)
+          if (normalized != trackName) return trySearch(normalized)
+          return []
         })
-      }
-      return Converter.toSpotubeMatchObject(data)
+      })
+    }
+
+    var titleArtist = "${trackName} ${artists}"
+    return trySearch(titleArtist).then((results) {
+      if (results != null && results.isNotEmpty) return results
+      var normalized = normalizeTitle(trackName)
+      if (normalized != trackName) return trySearch(normalized)
+      return []
     })
   }
 
