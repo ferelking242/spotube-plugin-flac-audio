@@ -90,7 +90,16 @@ class AudioSourceEndpoint {
         type: "lossless",
         name: "flac",
         qualities: [
+          { bitDepth: 24, sampleRate: 192000 },
           { bitDepth: 24, sampleRate: 96000 },
+          { bitDepth: 16, sampleRate: 44100 },
+        ],
+      }.toJson(),
+      {
+        type: "lossy",
+        name: "mp3",
+        qualities: [
+          { bitrate: 320000 },
         ],
       }.toJson(),
     ]
@@ -195,6 +204,39 @@ class AudioSourceEndpoint {
     })
   }
 
+  fun tryQueueFormat(qobuzUrl: String, title: String, artist: String, formatId: int) -> Map {
+    return getToken().then((token) {
+      if (token == null) return null
+      return api.post(
+        "/api/qobuz/queue",
+        data: {
+          "url": qobuzUrl,
+          "title": title,
+          "artist": artist,
+          "formatId": formatId,
+        }.toJson(),
+        options: RequestOptions(
+          headers: {
+            "content-type": "application/json",
+            "accept": "application/json, text/plain, */*",
+            "X-DL-Token": token,
+          }.toJson(),
+        ),
+      ).then((queueRes) {
+        if (queueRes.statusCode != 200 || queueRes.data == null || queueRes.data["id"] == null) return null
+        return pollJob(queueRes.data["id"], formatId, 120)
+      })
+    })
+  }
+
+  fun tryQueueWithFallback(qobuzUrl: String, title: String, artist: String, formatIds: List, idx: int) -> Map {
+    if (formatIds == null || idx >= formatIds.length) return Future.value(null)
+    return tryQueueFormat(qobuzUrl, title, artist, formatIds[idx]).then((result) {
+      if (result != null) return result
+      return tryQueueWithFallback(qobuzUrl, title, artist, formatIds, idx + 1)
+    })
+  }
+
   fun buildStream(match: Map) -> Map {
     if (match == null) return Future.value(null)
     var qobuzUrl = match["externalUri"] ?? ""
@@ -220,33 +262,10 @@ class AudioSourceEndpoint {
       })
     }
 
-    return getToken().then((token) {
-      if (token == null) return null
-
-      return api.post(
-        "/api/qobuz/queue",
-        data: {
-          "url": qobuzUrl,
-          "title": title,
-          "artist": artist,
-          "formatId": 7,
-        }.toJson(),
-        options: RequestOptions(
-          headers: {
-            "content-type": "application/json",
-            "accept": "application/json, text/plain, */*",
-            "X-DL-Token": token,
-          }.toJson(),
-        ),
-      ).then((queueRes) {
-        if (queueRes.statusCode != 200 || queueRes.data == null || queueRes.data["id"] == null) return null
-        var jobId = queueRes.data["id"]
-        return pollJob(jobId, 120)
-      })
-    })
+    return tryQueueWithFallback(qobuzUrl, title, artist, [27, 7, 6, 5], 0)
   }
 
-  fun pollJob(jobId: String, retries: int) -> Map {
+  fun pollJob(jobId: String, formatId: int, retries: int) -> Map {
     if (retries <= 0) return Future.value(null)
     return api.get_req(
       "/api/qobuz/jobs/${jobId}",
@@ -255,8 +274,19 @@ class AudioSourceEndpoint {
       if (jobRes.data["status"] == "done" && jobRes.data["file"] != null) {
         var filename = jobRes.data["file"]
         var prettyName = jobRes.data["pretty_name"] ?? filename
-        var sampleRate = jobRes.data["formatId"] == 7 ? 96000 : 44100
-        var bitDepth = jobRes.data["formatId"] == 7 ? 24 : 16
+        if (formatId == 5) {
+          return {
+            "url": "https://flacdownloader.com/qobuz/files/${filename}?name=${prettyName}",
+            "container": "mp3",
+            "type": "lossy",
+            "codec": "mp3",
+            "bitrate": 320000,
+            "sampleRate": 44100,
+            "bitDepth": 16,
+          }.toJson()
+        }
+        var sampleRate = formatId == 27 ? 192000 : (formatId == 7 ? 96000 : 44100)
+        var bitDepth = (formatId == 27 || formatId == 7) ? 24 : 16
         return {
           "url": "https://flacdownloader.com/qobuz/files/${filename}?name=${prettyName}",
           "container": "flac",
@@ -269,7 +299,7 @@ class AudioSourceEndpoint {
       }
       if (jobRes.data["status"] == "error") return null
       return Future(() {
-        return pollJob(jobId, retries - 1)
+        return pollJob(jobId, formatId, retries - 1)
       })
     })
   }
