@@ -88,8 +88,6 @@ class AudioSourceEndpoint {
         name: "flac",
         qualities: [
           { bitDepth: 24, sampleRate: 192000 },
-          { bitDepth: 24, sampleRate: 96000 },
-          { bitDepth: 16, sampleRate: 44100 },
         ],
       }.toJson(),
       {
