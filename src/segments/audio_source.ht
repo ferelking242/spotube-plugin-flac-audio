@@ -266,6 +266,7 @@ class AudioSourceEndpoint {
       if (queueRes.statusCode != 200 || queueRes.data == null || queueRes.data["id"] == null) {
         if (formatId == 27) return queueAttempt(url, title, artist, token, 7)
         if (formatId == 7) return queueAttempt(url, title, artist, token, 6)
+        if (formatId == 6) return queueAttempt(url, title, artist, token, 5)
         return null
       }
       return pollJob(queueRes.data["id"], 120, formatId)
