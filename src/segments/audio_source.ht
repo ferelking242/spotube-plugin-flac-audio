@@ -259,11 +259,11 @@ class AudioSourceEndpoint {
         if (formatId == 7) return queueAttempt(url, title, artist, token, 6)
         return null
       }
-      return pollJob(queueRes.data["id"], 120)
+      return pollJob(queueRes.data["id"], 120, formatId)
     })
   }
 
-  fun pollJob(jobId: String, retries: int) -> Map {
+  fun pollJob(jobId: String, retries: int, formatId: int) -> Map {
     if (retries <= 0) return Future.value(null)
     return api.get_req(
       "/api/qobuz/jobs/${jobId}",
@@ -272,21 +272,28 @@ class AudioSourceEndpoint {
       if (jobRes.data["status"] == "done" && jobRes.data["file"] != null) {
         var filename = jobRes.data["file"]
         var prettyName = jobRes.data["pretty_name"] ?? filename
-        var sampleRate = jobRes.data["formatId"] == 7 ? 96000 : 44100
-        var bitDepth = jobRes.data["formatId"] == 7 ? 24 : 16
-        return {
+        var isMp3 = formatId == 5
+        var stream = {
           "url": "https://flacdownloader.com/qobuz/files/${filename}?name=${prettyName}",
-          "container": "flac",
-          "type": "lossless",
-          "codec": "flac",
-          "bitrate": 1411200,
-          "sampleRate": sampleRate,
-          "bitDepth": bitDepth,
-        }.toJson()
+        }
+        if (isMp3) {
+          stream["container"] = "mp3"
+          stream["type"] = "lossy"
+          stream["codec"] = "mp3"
+          stream["bitrate"] = 320000
+        } else {
+          stream["container"] = "flac"
+          stream["type"] = "lossless"
+          stream["codec"] = "flac"
+          stream["bitrate"] = 1411200
+          stream["sampleRate"] = formatId == 7 ? 96000 : 44100
+          stream["bitDepth"] = formatId == 7 ? 24 : 16
+        }
+        return stream.toJson()
       }
       if (jobRes.data["status"] == "error") return null
       return Future(() {
-        return pollJob(jobId, retries - 1)
+        return pollJob(jobId, retries - 1, formatId)
       })
     })
   }
